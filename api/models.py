@@ -1,0 +1,129 @@
+from django.db import models
+from django.contrib.auth.models import AbstractUser
+
+
+class User(AbstractUser):
+    ROLES = [
+        ('student', 'Student'),
+        ('faculty', 'Faculty'),
+        ('admin',   'Admin'),
+    ]
+    role  = models.CharField(max_length=10, choices=ROLES, default='student')
+    email = models.EmailField(unique=True)
+
+    USERNAME_FIELD  = 'email'
+    REQUIRED_FIELDS = ['username']
+
+    def __str__(self):
+        return f"{self.get_full_name()} ({self.role})"
+
+
+class Department(models.Model):
+    name       = models.CharField(max_length=100)
+    school     = models.CharField(max_length=100)
+    short_code = models.CharField(max_length=10)
+
+    def __str__(self):
+        return self.name
+
+
+class Student(models.Model):
+    user             = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student')
+    student_id       = models.CharField(max_length=20, unique=True)
+    department       = models.ForeignKey(Department, on_delete=models.PROTECT)
+    batch            = models.IntegerField()
+    current_semester = models.IntegerField(default=1)
+    cgpa             = models.DecimalField(max_digits=4, decimal_places=2, default=0.00)
+    phone            = models.CharField(max_length=15, blank=True)
+
+    def __str__(self):
+        return f"{self.user.get_full_name()} — {self.student_id}"
+
+
+class Faculty(models.Model):
+    user           = models.OneToOneField(User, on_delete=models.CASCADE, related_name='faculty')
+    faculty_id     = models.CharField(max_length=20, unique=True)
+    department     = models.ForeignKey(Department, on_delete=models.PROTECT)
+    designation    = models.CharField(max_length=50)
+    specialization = models.CharField(max_length=100, blank=True)
+    phone          = models.CharField(max_length=15, blank=True)
+
+    def __str__(self):
+        return f"{self.user.get_full_name()} — {self.designation}"
+
+    class Meta:
+        verbose_name_plural = 'Faculty'
+
+
+class Course(models.Model):
+    code       = models.CharField(max_length=10, unique=True)
+    title      = models.CharField(max_length=100)
+    credit     = models.IntegerField()
+    semester   = models.IntegerField()
+    department = models.ForeignKey(Department, on_delete=models.PROTECT)
+    faculty    = models.ForeignKey(Faculty, on_delete=models.SET_NULL, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.code} — {self.title}"
+
+
+class Enrollment(models.Model):
+    student  = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='enrollments')
+    course   = models.ForeignKey(Course, on_delete=models.CASCADE)
+    semester = models.CharField(max_length=20)
+    year     = models.IntegerField()
+
+    class Meta:
+        unique_together = ('student', 'course', 'semester')
+
+    def __str__(self):
+        return f"{self.student.student_id} — {self.course.code} ({self.semester})"
+
+
+class Result(models.Model):
+    enrollment   = models.OneToOneField(Enrollment, on_delete=models.CASCADE, related_name='result')
+    marks        = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    grade        = models.CharField(max_length=4, blank=True)
+    grade_point  = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+    published    = models.BooleanField(default=False)
+    submitted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='submitted_results')
+    published_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='published_results')
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+    updated_at   = models.DateTimeField(auto_now=True)
+
+    @staticmethod
+    def calculate_grade(marks: float) -> dict:
+        if   marks >= 80: return {'grade': 'A',  'grade_point': 4.00}
+        elif marks >= 75: return {'grade': 'A-', 'grade_point': 3.75}
+        elif marks >= 70: return {'grade': 'B+', 'grade_point': 3.50}
+        elif marks >= 65: return {'grade': 'B',  'grade_point': 3.25}
+        elif marks >= 60: return {'grade': 'B-', 'grade_point': 3.00}
+        elif marks >= 55: return {'grade': 'C+', 'grade_point': 2.75}
+        elif marks >= 50: return {'grade': 'C',  'grade_point': 2.50}
+        elif marks >= 45: return {'grade': 'D',  'grade_point': 2.25}
+        else:             return {'grade': 'F',  'grade_point': 0.00}
+
+    def __str__(self):
+        return f"{self.enrollment} — {self.grade or 'Not graded'}"
+
+
+class Notice(models.Model):
+    CATEGORIES = [
+        ('exam',     'Exam'),
+        ('academic', 'Academic'),
+        ('event',    'Event'),
+        ('general',  'General'),
+    ]
+    title        = models.CharField(max_length=200)
+    body         = models.TextField()
+    category     = models.CharField(max_length=10, choices=CATEGORIES, default='general')
+    created_by   = models.ForeignKey(User, on_delete=models.PROTECT)
+    is_active    = models.BooleanField(default=True)
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-published_at']
+
+    def __str__(self):
+        return self.title
