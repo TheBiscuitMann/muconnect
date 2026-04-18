@@ -166,3 +166,63 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.sender.user.first_name}: {self.text[:30]}"
+
+class RetakeApplication(models.Model):
+    STATUS_CHOICES = [
+        ('pending',  'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+    TYPE_CHOICES = [
+        ('retake',         'Retake Exam'),
+        ('supplementary',  'Supplementary Exam'),
+    ]
+
+    student    = models.ForeignKey(Student,    on_delete=models.CASCADE, related_name='retake_applications')
+    enrollment = models.ForeignKey(Enrollment, on_delete=models.CASCADE, related_name='retake_applications')
+    exam_type  = models.CharField(max_length=20, choices=TYPE_CHOICES, default='retake')
+    reason     = models.TextField(blank=True)
+    status     = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    applied_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('student', 'enrollment', 'exam_type')
+        ordering        = ['-applied_at']
+
+    def __str__(self):
+        return f"{self.student.user.get_full_name()} — {self.enrollment.course.code} ({self.exam_type})"
+
+# ══════════════════════════════════════════════════════════════════
+# Attendance Feature
+# ══════════════════════════════════════════════════════════════════
+
+class AttendanceSession(models.Model):
+    """One class session for a course on a specific date."""
+    course     = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='sessions')
+    batch      = models.CharField(max_length=20)   # e.g. 'CSE 58(C+G)'
+    date       = models.DateField()
+    topic      = models.CharField(max_length=200, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('course', 'batch', 'date')
+        ordering        = ['-date']
+
+    def __str__(self):
+        return f"{self.course.code} | {self.batch} | {self.date}"
+
+
+class AttendanceRecord(models.Model):
+    """Whether a student was present or absent in a session."""
+    session   = models.ForeignKey(AttendanceSession, on_delete=models.CASCADE, related_name='records')
+    student   = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='attendance_records')
+    present   = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ('session', 'student')
+
+    def __str__(self):
+        status = 'Present' if self.present else 'Absent'
+        return f"{self.student.student_id} | {self.session} | {status}"
