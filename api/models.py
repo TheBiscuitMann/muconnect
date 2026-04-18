@@ -36,6 +36,11 @@ class Student(models.Model):
     cgpa             = models.DecimalField(max_digits=4, decimal_places=2, default=0.00)
     phone            = models.CharField(max_length=15, blank=True)
 
+    # ── Peer Network ──────────────────────────────────────────
+    is_mentor        = models.BooleanField(default=False)
+    mentor_bio       = models.TextField(blank=True, help_text="Short bio shown on mentor profile")
+    mentor_since     = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return f"{self.user.get_full_name()} — {self.student_id}"
 
@@ -127,3 +132,37 @@ class Notice(models.Model):
 
     def __str__(self):
         return self.title
+
+
+# ══════════════════════════════════════════════════════════════════
+# Peer Network Feature
+# ══════════════════════════════════════════════════════════════════
+
+class Conversation(models.Model):
+    """A chat between a mentor (student) and a mentee (student)."""
+    mentor     = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='mentor_conversations')
+    mentee     = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='mentee_conversations')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('mentor', 'mentee')
+        ordering        = ['-updated_at']
+
+    def __str__(self):
+        return f"{self.mentee.user.get_full_name()} ↔ {self.mentor.user.get_full_name()}"
+
+
+class Message(models.Model):
+    """A single message inside a conversation."""
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
+    sender       = models.ForeignKey(Student, on_delete=models.CASCADE)
+    text         = models.TextField()
+    created_at   = models.DateTimeField(auto_now_add=True)
+    read_at      = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"{self.sender.user.first_name}: {self.text[:30]}"

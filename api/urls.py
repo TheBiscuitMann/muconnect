@@ -15,6 +15,14 @@ urlpatterns = [
     path('student/transcript/', views.student_transcript, name='student-transcript'),
     path('student/profile/',    views.student_profile,    name='student-profile'),
 
+    # ── Peer Network ─────────────────────────────────────────────
+    path('student/peer/status/',                         views.peer_status,              name='peer-status'),
+    path('student/peer/toggle/',                         views.peer_toggle_mentor,       name='peer-toggle'),
+    path('student/peer/mentors/',                        views.peer_mentors,             name='peer-mentors'),
+    path('student/peer/conversations/',                  views.peer_conversations,       name='peer-conversations'),
+    path('student/peer/start/',                          views.peer_start_conversation,  name='peer-start'),
+    path('student/peer/messages/<int:conversation_id>/', views.peer_messages,            name='peer-messages'),
+
     # ── Faculty ──────────────────────────────────────────────────
     path('faculty/dashboard/',                        views.faculty_dashboard, name='faculty-dashboard'),
     path('faculty/courses/',                          views.faculty_courses,   name='faculty-courses'),

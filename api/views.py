@@ -1,11 +1,12 @@
 from django.utils import timezone
 from django.db import models as django_models
+from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Student, Faculty, Course, Enrollment, Result, Notice, User
+from .models import Student, Faculty, Course, Enrollment, Result, Notice, User, Conversation, Message
 from .serializers import (
     StudentSerializer, FacultySerializer, CourseSerializer,
     ResultSerializer, NoticeSerializer, GradeSubmitSerializer, UserSerializer
@@ -63,10 +64,7 @@ def me_view(request):
 def student_dashboard(request):
     student = request.user.student
 
-    # All enrollments
     all_enrollments = Enrollment.objects.filter(student=student)
-
-    # Published results
     published = all_enrollments.filter(
         result__published=True
     ).select_related('course', 'result')
@@ -78,17 +76,14 @@ def student_dashboard(request):
         e.course.credit for e in published if e.result.grade != 'F'
     )
 
-    # Total credits in department
     total_credits_required = Course.objects.filter(
         department=student.department
     ).aggregate(total=django_models.Sum('credit'))['total'] or 160
 
-    # Degree progress
     degree_progress = round(
         (credits_earned / total_credits_required) * 100, 1
     ) if total_credits_required else 0
 
-    # Recent notices
     recent_notices = Notice.objects.filter(
         is_active=True
     ).order_by('-published_at')[:3]
@@ -160,7 +155,6 @@ def student_transcript(request):
         result__published=True
     ).select_related('course', 'result').order_by('semester')
 
-    # Group by semester
     semesters = {}
     for e in enrollments:
         sem = e.semester
@@ -180,7 +174,6 @@ def student_transcript(request):
             'grade_point': float(e.result.grade_point or 0),
         })
 
-    # Calculate GPA per semester
     for sem_data in semesters.values():
         total_points  = sum(c['grade_point'] * c['credit'] for c in sem_data['courses'])
         total_credits = sum(c['credit'] for c in sem_data['courses'])
@@ -523,3 +516,222 @@ def notice_update(request, pk):
         serializer.save()
         return Response(serializer.data)
     return Response(serializer.errors, status=400)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Peer Network Feature
+# ══════════════════════════════════════════════════════════════════
+
+MENTOR_CGPA_THRESHOLD = 3.85
+
+
+@api_view(['GET'])
+@permission_classes([IsStudent])
+def peer_status(request):
+    """Tell the student if they're eligible to be a mentor and their current status."""
+    student = request.user.student
+    return Response({
+        'cgpa':         float(student.cgpa),
+        'is_mentor':    student.is_mentor,
+        'is_eligible':  float(student.cgpa) >= MENTOR_CGPA_THRESHOLD,
+        'threshold':    MENTOR_CGPA_THRESHOLD,
+        'mentor_bio':   student.mentor_bio,
+        'mentor_since': student.mentor_since,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsStudent])
+def peer_toggle_mentor(request):
+    """Toggle mentor status. Only students with CGPA >= threshold can become mentors."""
+    student = request.user.student
+    become  = request.data.get('become_mentor', False)
+    bio     = request.data.get('mentor_bio', '')
+
+    if become:
+        if float(student.cgpa) < MENTOR_CGPA_THRESHOLD:
+            return Response(
+                {'message': f'You need a CGPA of {MENTOR_CGPA_THRESHOLD} or higher to become a mentor.'},
+                status=400
+            )
+        student.is_mentor    = True
+        student.mentor_bio   = bio
+        student.mentor_since = timezone.now()
+    else:
+        student.is_mentor = False
+
+    student.save()
+    return Response({
+        'message':      'Mentor status updated successfully',
+        'is_mentor':    student.is_mentor,
+        'mentor_bio':   student.mentor_bio,
+        'mentor_since': student.mentor_since,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsStudent])
+def peer_mentors(request):
+    """List all active mentors (excluding the current user)."""
+    current = request.user.student
+    mentors = Student.objects.filter(
+        is_mentor=True
+    ).exclude(id=current.id).select_related('user', 'department').order_by('-cgpa')
+
+    data = [{
+        'id':               m.id,
+        'student_id':       m.student_id,
+        'name':             m.user.get_full_name(),
+        'department':       m.department.name,
+        'department_code':  m.department.short_code,
+        'batch':            m.batch,
+        'current_semester': m.current_semester,
+        'cgpa':             float(m.cgpa),
+        'bio':              m.mentor_bio,
+        'mentor_since':     m.mentor_since,
+    } for m in mentors]
+
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsStudent])
+def peer_conversations(request):
+    """List all conversations the current student is part of."""
+    student = request.user.student
+
+    conversations = Conversation.objects.filter(
+        Q(mentor=student) | Q(mentee=student)
+    ).select_related(
+        'mentor__user', 'mentee__user',
+        'mentor__department', 'mentee__department',
+    ).prefetch_related('messages')
+
+    data = []
+    for c in conversations:
+        if c.mentor == student:
+            other    = c.mentee
+            my_role  = 'mentor'
+        else:
+            other    = c.mentor
+            my_role  = 'mentee'
+
+        last_msg = c.messages.last()
+        unread_count = c.messages.filter(read_at__isnull=True).exclude(sender=student).count()
+
+        data.append({
+            'id':            c.id,
+            'other_student': {
+                'id':         other.id,
+                'student_id': other.student_id,
+                'name':       other.user.get_full_name(),
+                'department': other.department.name,
+                'cgpa':       float(other.cgpa),
+                'is_mentor':  other.is_mentor,
+            },
+            'my_role':       my_role,
+            'last_message':  {
+                'text':       last_msg.text if last_msg else None,
+                'sender_me':  (last_msg.sender == student) if last_msg else False,
+                'created_at': last_msg.created_at if last_msg else None,
+            } if last_msg else None,
+            'unread_count':  unread_count,
+            'created_at':    c.created_at,
+            'updated_at':    c.updated_at,
+        })
+
+    data.sort(key=lambda x: x.get('updated_at'), reverse=True)
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsStudent])
+def peer_start_conversation(request):
+    """Start a new conversation with a mentor (or return existing one)."""
+    mentee    = request.user.student
+    mentor_id = request.data.get('mentor_id')
+
+    if not mentor_id:
+        return Response({'message': 'mentor_id is required'}, status=400)
+
+    try:
+        mentor = Student.objects.get(id=mentor_id, is_mentor=True)
+    except Student.DoesNotExist:
+        return Response({'message': 'Mentor not found'}, status=404)
+
+    if mentor.id == mentee.id:
+        return Response({'message': 'You cannot message yourself'}, status=400)
+
+    conversation, created = Conversation.objects.get_or_create(
+        mentor=mentor, mentee=mentee
+    )
+
+    return Response({
+        'id':          conversation.id,
+        'created':     created,
+        'mentor_name': mentor.user.get_full_name(),
+    }, status=201 if created else 200)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsStudent])
+def peer_messages(request, conversation_id):
+    """GET: fetch all messages. POST: send a new message."""
+    student = request.user.student
+
+    try:
+        conv = Conversation.objects.get(
+            Q(id=conversation_id) & (Q(mentor=student) | Q(mentee=student))
+        )
+    except Conversation.DoesNotExist:
+        return Response({'message': 'Conversation not found'}, status=404)
+
+    if request.method == 'GET':
+        Message.objects.filter(
+            conversation=conv, read_at__isnull=True
+        ).exclude(sender=student).update(read_at=timezone.now())
+
+        messages = conv.messages.all()
+        other    = conv.mentor if conv.mentee == student else conv.mentee
+
+        return Response({
+            'conversation': {
+                'id':    conv.id,
+                'other': {
+                    'id':         other.id,
+                    'student_id': other.student_id,
+                    'name':       other.user.get_full_name(),
+                    'department': other.department.name,
+                    'cgpa':       float(other.cgpa),
+                    'is_mentor':  other.is_mentor,
+                },
+                'my_role': 'mentor' if conv.mentor == student else 'mentee',
+            },
+            'messages': [{
+                'id':          m.id,
+                'text':        m.text,
+                'sender_me':   (m.sender == student),
+                'sender_name': m.sender.user.get_full_name(),
+                'created_at':  m.created_at,
+                'read_at':     m.read_at,
+            } for m in messages],
+        })
+
+    elif request.method == 'POST':
+        text = request.data.get('text', '').strip()
+        if not text:
+            return Response({'message': 'Message text is required'}, status=400)
+
+        msg = Message.objects.create(
+            conversation=conv, sender=student, text=text
+        )
+        conv.save()
+
+        return Response({
+            'id':          msg.id,
+            'text':        msg.text,
+            'sender_me':   True,
+            'sender_name': student.user.get_full_name(),
+            'created_at':  msg.created_at,
+            'read_at':     None,
+        }, status=201)
